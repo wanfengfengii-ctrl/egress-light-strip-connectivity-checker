@@ -17,11 +17,12 @@
 ```
 app/
   main.py          FastAPI 入口、路由与结构化错误处理
-  models.py        Pydantic 请求/响应/错误模型
+  models.py        Pydantic 请求/响应/错误模型（含排空契约）
   validation.py    输入契约校验（整图拒绝的全部规则）
   connectivity.py  四邻接 BFS 图搜索
   inspector.py     可达性判定与证据坐标计算
-tests/             pytest：连通算法边界判据 + 输入校验 + 端到端 API
+  drain.py         排空协调器（状态机 + 在途计数）与检查准入中间件
+tests/             pytest：连通算法边界判据 + 输入校验 + 排空生命周期 + 端到端 API
 acceptance.py      一次性验收脚本（verify 服务使用）
 Dockerfile         python:3.12-slim 镜像（同时打包测试与 docker-compose.yml，供 verify 容器内校验）
 docker-compose.yml api 服务 + verify 一次性验收服务
@@ -135,6 +136,38 @@ curl -s -X POST http://localhost:8000/inspect \
 | `EXIT_ID_DUPLICATE` | 编号重复 |
 | `SCHEMA_ERROR` | 请求体不符合 JSON 结构（类型错误、缺字段、多字段、非法 JSON 等） |
 
+#### 示例：排空后开始拒绝 → `503` 结构化错误
+
+一旦进入排空（见下文 `POST /drain`），新的检查请求不再准入，返回带当前状态的结构化 503：
+
+```json
+{
+  "detail": {
+    "code": "SERVICE_DRAINING",
+    "message": "The service is draining for a rolling update and no longer accepts new inspection requests.",
+    "state": "DRAINING"
+  }
+}
+```
+
+`detail.state` 为 `DRAINING`（排空中）或 `DRAINED`（已排空）。排空前已准入的请求不受影响，
+仍按原有的 `PASS`、`FAIL` 或 `422` 完成。
+
+### `POST /drain`
+
+滚动更新前的排空接口，无需请求体。调用后服务由 `ACCEPTING` 转为 `DRAINING`：
+准入中间件立即拒绝新的 `POST /inspect`（上述 503），协调器等待此前已准入的
+检查全部结束——无论其结果是成功、校验拒绝、内部异常还是请求取消，在途计数都会
+在 finally 路径释放——随后转为终态 `DRAINED` 并返回：
+
+```json
+{"state": "DRAINED", "in_flight": 0}
+```
+
+并发调用 `/drain` 复用同一次状态转换：所有调用方在计数归零后得到完全相同的响应。
+`DRAINED` 是终态，只有进程重启才能恢复接纳。`/healthz` 与 `/drain` 本身不受准入限制，
+排空期间照常可用。
+
 ### `GET /healthz`
 
 健康检查，返回 `{"status": "ok"}`。交互式 API 文档见 `/docs`。
@@ -162,7 +195,8 @@ API_PORT=9000 docker compose up    # 用 API_PORT 覆盖宿主端口
 不重复构建，避免同名镜像在并行构建时冲突），并通过 `pull_policy: never`
 保证不会误从镜像仓库拉取同名镜像。`verify` 等待 API 健康后，先跑完整
 pytest 套件，再对运行中的 API 执行 `acceptance.py` 的实网 HTTP 验收
-（PASS/FAIL/排序/证据坐标/各类 422），随后退出并以退出码报告结果：
+（PASS/FAIL/排序/证据坐标/各类 422，最后才是排空检查——排空是终态，
+必须排在所有检查之后），随后退出并以退出码报告结果：
 
 ```bash
 docker compose --profile verify up --build --abort-on-container-exit --exit-code-from verify
@@ -185,3 +219,8 @@ pytest
 对角不导通、空位隔断、网格边缘不回绕（Python 负索引陷阱）、
 证据坐标取分量首单元、同分量多出口共享证据、Unicode 码点排序，
 以及全部输入拒绝规则与端到端 PASS/FAIL 报文。
+
+排空生命周期由 `tests/test_drain.py` 覆盖：用可控阻塞的检查证明排空会等待
+在途请求、拒绝新请求（结构化 503），内部异常与请求取消都会在 finally 路径
+释放在途计数，并发 `/drain` 复用同一次转换并返回相同结果，`DRAINED` 终态
+只能随进程重启恢复，且未调用排空时普通检查报文无任何回归。

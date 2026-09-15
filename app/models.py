@@ -1,6 +1,7 @@
 """Pydantic schemas for the inspection API."""
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -64,3 +65,48 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: ErrorDetail
+
+
+class DrainState(str, Enum):
+    """Admission lifecycle of the service: ACCEPTING -> DRAINING -> DRAINED.
+
+    DRAINED is terminal; only a process restart returns the service to
+    ACCEPTING. The same enum is shared by the drain coordinator, the
+    admission middleware, and the HTTP layer so every component speaks one
+    contract.
+    """
+
+    ACCEPTING = "ACCEPTING"
+    DRAINING = "DRAINING"
+    DRAINED = "DRAINED"
+
+
+class DrainReport(BaseModel):
+    """Outcome of POST /drain.
+
+    The report is produced only after every previously admitted inspection
+    has finished, and every concurrent drain caller observes this same
+    result.
+    """
+
+    state: Literal[DrainState.DRAINED] = Field(
+        description="Terminal state; reported only once the service has fully drained."
+    )
+    in_flight: int = Field(
+        ge=0,
+        description="Inspections still running when the report was produced; always 0.",
+    )
+
+
+class DrainRejectionDetail(BaseModel):
+    """Structured 503 payload for inspections refused after draining began."""
+
+    code: Literal["SERVICE_DRAINING"]
+    message: str
+    state: DrainState = Field(
+        description="Lifecycle state at refusal time: DRAINING or DRAINED."
+    )
+
+
+class DrainRejectionResponse(BaseModel):
+    detail: DrainRejectionDetail

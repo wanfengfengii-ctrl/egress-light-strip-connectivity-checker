@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -124,6 +125,42 @@ def check_health():
     return False, f"healthz returned {status}: {body}"
 
 
+DRAINED_BODY = {"state": "DRAINED", "in_flight": 0}
+
+
+def check_drain_report():
+    status, body = _request("POST", "/drain")
+    if status == 200 and body == DRAINED_BODY:
+        return True, ""
+    return False, f"drain returned {status}: {body}"
+
+
+def check_concurrent_drains_share_one_result():
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(_request("POST", "/drain")))
+               for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=TIMEOUT_SECONDS)
+    expected = [(200, DRAINED_BODY)] * 5
+    if results == expected:
+        return True, ""
+    return False, f"concurrent drains diverged: {results}"
+
+
+def check_inspect_refused_after_drain():
+    status, body = _request("POST", "/inspect", PASS_PAYLOAD)
+    detail = body.get("detail", {}) if isinstance(body, dict) else {}
+    if (
+        status == 503
+        and detail.get("code") == "SERVICE_DRAINING"
+        and detail.get("state") == "DRAINED"
+    ):
+        return True, ""
+    return False, f"expected structured 503 after drain, got {status}: {body}"
+
+
 CHECKS = [
     ("health endpoint responds", check_health),
     (
@@ -212,20 +249,38 @@ CHECKS = [
     ),
 ]
 
+# Terminal drain checks: they must run after every inspection check above,
+# because a drained process never accepts inspections again.
+DRAIN_CHECKS = [
+    ("drain reports DRAINED once in-flight work finished", check_drain_report),
+    (
+        "concurrent drains share one transition and one result",
+        check_concurrent_drains_share_one_result,
+    ),
+    (
+        "inspections after drain get a structured 503",
+        check_inspect_refused_after_drain,
+    ),
+    ("health endpoint survives draining", check_health),
+]
+
 
 def main():
     if not wait_until_ready():
         print(f"[FAIL] API not reachable at {BASE_URL}")
         return 1
     failures = 0
-    for name, check in CHECKS:
+    # DRAIN_CHECKS run last: draining is terminal for the process, so no
+    # inspection check may follow them.
+    for name, check in CHECKS + DRAIN_CHECKS:
         try:
             ok, detail = check()
         except Exception as exc:  # noqa: BLE001 - report any failure and continue
             ok, detail = False, f"exception: {exc!r}"
         print(f"[{'PASS' if ok else 'FAIL'}] {name}" + ("" if ok else f" -- {detail}"))
         failures += 0 if ok else 1
-    print(f"{len(CHECKS) - failures}/{len(CHECKS)} acceptance checks passed")
+    total = len(CHECKS) + len(DRAIN_CHECKS)
+    print(f"{total - failures}/{total} acceptance checks passed")
     return 1 if failures else 0
 
 
