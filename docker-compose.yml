@@ -1,9 +1,14 @@
 name: passage-inspector
 
+# The image is built exactly once, by the api service, and verify reuses it.
+# Declaring the same image name on two services that both have build sections
+# makes Compose build and tag the image twice, which conflicts when the
+# services are built together. The anchor keeps a single source of truth for
+# the image name.
 services:
   api:
     build: .
-    image: passage-inspector:latest
+    image: &app-image passage-inspector:latest
     ports:
       - "${API_PORT:-8000}:8000"
     healthcheck:
@@ -17,8 +22,8 @@ services:
   # against the API, then exits. Start it with:
   #   docker compose --profile verify up --build --abort-on-container-exit --exit-code-from verify
   verify:
-    build: .
-    image: passage-inspector:latest
+    image: *app-image
+    pull_policy: never  # the image is built locally by the api service; never fetch this name from a registry
     profiles: ["verify"]
     depends_on:
       api:

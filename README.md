@@ -158,9 +158,11 @@ API_PORT=9000 docker compose up    # 用 API_PORT 覆盖宿主端口
 
 ### 一次性验收（verify 服务）
 
-`verify` 服务等待 API 健康后，先跑完整 pytest 套件，再对运行中的 API
-执行 `acceptance.py` 的实网 HTTP 验收（PASS/FAIL/排序/证据坐标/各类 422），
-随后退出并以退出码报告结果：
+`verify` 与 `api` 共享同一镜像——镜像由 `api` 服务唯一构建（`verify` 只引用、
+不重复构建，避免同名镜像在并行构建时冲突），并通过 `pull_policy: never`
+保证不会误从镜像仓库拉取同名镜像。`verify` 等待 API 健康后，先跑完整
+pytest 套件，再对运行中的 API 执行 `acceptance.py` 的实网 HTTP 验收
+（PASS/FAIL/排序/证据坐标/各类 422），随后退出并以退出码报告结果：
 
 ```bash
 docker compose --profile verify up --build --abort-on-container-exit --exit-code-from verify
