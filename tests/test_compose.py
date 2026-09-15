@@ -7,12 +7,19 @@ invariants that keep `docker compose up` and the verify profile working.
 """
 from pathlib import Path
 
+import pytest
 import yaml
 
 COMPOSE_PATH = Path(__file__).resolve().parent.parent / "docker-compose.yml"
 
 
 def load_services():
+    if not COMPOSE_PATH.is_file():
+        pytest.fail(
+            f"{COMPOSE_PATH} is missing; the Dockerfile must COPY "
+            "docker-compose.yml into the image so the verify service can "
+            "validate the compose configuration"
+        )
     document = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
     return document["services"]
 

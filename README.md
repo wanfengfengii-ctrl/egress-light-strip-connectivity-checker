@@ -23,7 +23,7 @@ app/
   inspector.py     可达性判定与证据坐标计算
 tests/             pytest：连通算法边界判据 + 输入校验 + 端到端 API
 acceptance.py      一次性验收脚本（verify 服务使用）
-Dockerfile         python:3.12-slim 镜像
+Dockerfile         python:3.12-slim 镜像（同时打包测试与 docker-compose.yml，供 verify 容器内校验）
 docker-compose.yml api 服务 + verify 一次性验收服务
 ```
 
