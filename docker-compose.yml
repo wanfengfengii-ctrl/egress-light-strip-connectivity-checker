@@ -1,0 +1,28 @@
+name: passage-inspector
+
+services:
+  api:
+    build: .
+    image: passage-inspector:latest
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # One-shot acceptance service: runs the pytest suite plus live HTTP checks
+  # against the API, then exits. Start it with:
+  #   docker compose --profile verify up --build --abort-on-container-exit --exit-code-from verify
+  verify:
+    build: .
+    image: passage-inspector:latest
+    profiles: ["verify"]
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: http://api:8000
+    command: ["sh", "-c", "python -m pytest tests -q && python acceptance.py"]
